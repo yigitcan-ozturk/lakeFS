@@ -2,9 +2,7 @@ import argparse
 import os
 import sys
 
-import lakefs_client
-from lakefs_client import models
-from lakefs_client.client import LakeFSClient
+import lakefs
 from python_on_whales import docker
 from tenacity import retry, stop_after_attempt, wait_fixed
 
@@ -25,8 +23,8 @@ def get_spark_submit_cmd(submit_flags, spark_config, jar_name, jar_args):
 
 @retry(wait=wait_fixed(1), stop=stop_after_attempt(7))
 def wait_for_setup(lfs_client):
-    repositories = lfs_client.repositories.list_repositories()
-    assert len(repositories.results) >= 0
+    next(lakefs.repositories(client=lfs_client), None)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -48,18 +46,23 @@ def main():
     else:
         submit_flags = ["--jars", "/target/client.jar"]
 
-    lfs_client = LakeFSClient(
-        lakefs_client.Configuration(username=lakefs_access_key,
-                                    password=lakefs_secret_key,
-                                    host='http://localhost:8000'))
+    lfs_client = lakefs.Client(
+        username=lakefs_access_key,
+        password=lakefs_secret_key,
+        host='http://localhost:8000',
+    )
     wait_for_setup(lfs_client)
-    lfs_client.repositories.create_repository(
-        models.RepositoryCreation(name=args.repository,
-                                  storage_namespace=args.storage_namespace,
-                                  default_branch='main',))
+    repository = lakefs.Repository(args.repository, client=lfs_client).create(
+        storage_namespace=args.storage_namespace,
+        default_branch='main',
+    )
 
     with open('./app/data-sets/sonnets.txt', 'rb') as f:
-        lfs_client.objects.upload_object(repository=args.repository, branch="main", path="sonnets.txt", content=f)
+        repository.branch("main").object("sonnets.txt").upload(
+            data=f.read(),
+            mode="wb",
+            pre_sign=False,
+        )
     base_hadoopfs_config = {
         "spark.hadoop.fs.lakefs.impl": "io.lakefs.LakeFSFileSystem",
         "spark.driver.extraJavaOptions": "-Dcom.amazonaws.services.s3.enableV4=true",
